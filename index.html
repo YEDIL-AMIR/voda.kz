@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Карта водных ресурсов Казахстана</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
 <style>
 /* Базовые переменные и дизайн в стиле Apple Dark Mode */
 :root {
@@ -73,9 +76,11 @@ main { max-width: 1200px; margin: auto; padding: 20px; }
     border-radius: 24px;
     margin-bottom: 20px;
     border: 1px solid var(--border-color);
+    background-color: var(--bg-card); /* Предотвращает чисто черный фон при загрузке */
     z-index: 1;
 }
 
+/* Инверсия светлой карты для Dark Mode */
 .leaflet-layer, .leaflet-control-zoom-in, .leaflet-control-zoom-out, .leaflet-control-attribution {
     filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
 }
@@ -365,24 +370,19 @@ main { max-width: 1200px; margin: auto; padding: 20px; }
     </div>
 </main>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-/**
- * ОПТИМИЗАЦИЯ 1: Безопасность (Защита от XSS)
- * Функция экранирования HTML-тегов, чтобы предотвратить внедрение вредоносного кода при добавлении родника.
+/** * БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ 
+ * Карта рисуется мгновенно, чтобы избежать черного экрана
  */
+const map = L.map('map').setView([48, 67], 5);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+let markersLayer = L.layerGroup().addTo(map);
+
 const escapeHTML = (str) => {
     if (!str) return '';
-    return str.replace(/[&<>'"]/g, tag => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
-    }[tag]));
+    return str.replace(/[&<>'"]/g, tag => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'}[tag]));
 };
 
-/**
- * ОПТИМИЗАЦИЯ 2: Производительность (Debounce)
- * Предотвращает множественный вызов функции фильтрации при быстром наборе текста.
- */
 const debounce = (func, wait) => {
     let timeout;
     return function(...args) {
@@ -391,7 +391,6 @@ const debounce = (func, wait) => {
     };
 };
 
-// --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ ---
 const defaultSprings = [
     { id: 1, name: "Ак-Булак", region: "Алматинская область", type: "Горный источник", lat: 43.2389, lng: 76.8897, status: "green", statusText: "Подходит для электролиза", researcher: "Алиев Руслан", date: "12.05.2023", lab: { ph: "7.2", min: "150 мг/л", cond: "300 мкСм/см", hard: "2.1 мг-экв/л", temp: "8°C", imp: "Нет" } },
     { id: 2, name: "Сары-Агаш скважина №4", region: "Туркестанская область", type: "Минеральный источник", lat: 41.455, lng: 69.166, status: "red", statusText: "Не рекомендуется", researcher: "Сапарова Дина", date: "04.08.2023", lab: { ph: "8.5", min: "1200 мг/л", cond: "1500 мкСм/см", hard: "6.5 мг-экв/л", temp: "42°C", imp: "Сульфаты" } },
@@ -399,15 +398,26 @@ const defaultSprings = [
     { id: 4, name: "Алма-Арасан", region: "Алматинская область", type: "Термальный", lat: 43.083, lng: 76.901, status: "blue", statusText: "Лабораторное исследование выполнено", researcher: "Калиев Е.", date: "15.09.2023", lab: { ph: "7.8", min: "400 мг/л", cond: "600 мкСм/см", hard: "3.2 мг-экв/л", temp: "35°C", imp: "Радон" } }
 ];
 
-let springs = JSON.parse(localStorage.getItem('kz_springs_db')) || defaultSprings;
+let springs = [];
 let currentFilter = 'all';
 let searchQuery = '';
-let markersLayer = L.layerGroup(); // ОПТИМИЗАЦИЯ 3: Использование LayerGroup для карты
 
-// --- ИНИЦИАЛИЗАЦИЯ КАРТЫ ---
-const map = L.map('map').setView([48, 67], 5);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-markersLayer.addTo(map);
+// Безопасное получение данных из памяти
+function getLocalData() {
+    try {
+        const data = localStorage.getItem('kz_springs_db');
+        return data ? JSON.parse(data) : null;
+    } catch (e) {
+        console.error("Ошибка кэша. Очистка...", e);
+        localStorage.removeItem('kz_springs_db');
+        return null;
+    }
+}
+
+// ИНИЦИАЛИЗАЦИЯ SUPABASE (С вашими готовыми ключами)
+const supabaseUrl = 'https://ruufnctrimvyiakmohdb.supabase.co';
+const supabaseKey = 'sb_publishable_OKaW99uT-sCy51HvDymzzw_agJ02m_7';
+const supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
 
 const getMarkerIcon = (color) => {
     const hexMap = { green: '#22c55e', yellow: '#eab308', red: '#ef4444', blue: '#3b82f6' };
@@ -419,8 +429,36 @@ const getMarkerIcon = (color) => {
     });
 };
 
+async function loadSpringsFromDatabase() {
+    try {
+        const { data, error } = await supabase.from('springs').select('*').order('id', { ascending: true });
+        if (error) throw error;
+        
+        if (data && data.length > 0) {
+            springs = data.map(item => ({
+                id: item.id,
+                name: item.name,
+                region: item.region,
+                type: item.type,
+                lat: parseFloat(item.lat),
+                lng: parseFloat(item.lng),
+                status: item.status || 'yellow',
+                statusText: item.status_text || item.statusText || 'Данные проверяются',
+                researcher: item.researcher,
+                date: item.date,
+                lab: item.lab || null
+            }));
+        } else {
+            springs = getLocalData() || defaultSprings;
+        }
+    } catch (err) {
+        console.warn("Сбой сети, грузим резервные данные:", err.message);
+        springs = getLocalData() || defaultSprings;
+    }
+    renderMapAndList();
+}
+
 function renderMapAndList() {
-    // Очистка старых маркеров стала быстрее
     markersLayer.clearLayers();
     
     let filtered = springs.filter(s => {
@@ -429,14 +467,12 @@ function renderMapAndList() {
         return matchesSearch && matchesFilter;
     });
 
-    // Отрисовка карты
     filtered.forEach(s => {
         L.marker([s.lat, s.lng], { icon: getMarkerIcon(s.status) })
          .bindPopup(`<b>${escapeHTML(s.name)}</b><br><span style="color:#a0a0ab">${escapeHTML(s.region)}</span><br><br><span class="badge bg-${s.status}">${escapeHTML(s.statusText)}</span>`)
          .addTo(markersLayer);
     });
 
-    // Отрисовка списка (с XSS защитой)
     document.getElementById('list').innerHTML = filtered.map(s => `
         <div class="card">
             <div class="card-header">
@@ -462,11 +498,10 @@ function renderMapAndList() {
     `).join('');
 }
 
-// --- СОБЫТИЯ И ФИЛЬТРЫ ---
 const handleSearch = debounce((e) => {
     searchQuery = e.target.value.toLowerCase();
     renderMapAndList();
-}, 300); // Задержка 300мс
+}, 300);
 
 document.getElementById('search').addEventListener('input', handleSearch);
 
@@ -480,63 +515,72 @@ document.querySelectorAll('.filter-btn').forEach(btn => {
     });
 });
 
-// --- ДОБАВЛЕНИЕ РОДНИКА ---
+// Добавление родника
 const addModal = document.getElementById('addModal');
 const addForm = document.getElementById('addSpringForm');
 
-document.getElementById('addSpringBtn').addEventListener('click', () => addModal.style.display = 'flex');
+document.getElementById('addSpringBtn').addEventListener('click', async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+        alert("Добавлять новые источники на карту могут только авторизованные исследователи!");
+        document.getElementById('authModal').style.display = 'flex';
+        return;
+    }
+    addModal.style.display = 'flex';
+});
+
 document.getElementById('closeModalBtn').addEventListener('click', () => addModal.style.display = 'none');
 
-addForm.addEventListener('submit', (e) => {
+addForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     
-    // ОПТИМИЗАЦИЯ 4: Использование FormData
     const formData = new FormData(e.target);
     const lat = parseFloat(formData.get('m_lat'));
     const lng = parseFloat(formData.get('m_lng'));
     
     const newSpring = {
-        id: Date.now(), // Уникальный ID
         name: formData.get('m_name'),
         region: formData.get('m_region'),
         type: formData.get('m_type'),
         lat: lat,
         lng: lng,
         status: "yellow", 
-        statusText: "Данные проверяются",
+        status_text: "Данные проверяются",
         researcher: formData.get('m_researcher'),
-        date: new Date().toLocaleDateString('ru-RU'),
-        lab: null
+        date: new Date().toLocaleDateString('ru-RU')
     };
 
-    springs.push(newSpring);
-    localStorage.setItem('kz_springs_db', JSON.stringify(springs));
+    let localDB = getLocalData() || defaultSprings;
+    localDB.push({ id: Date.now(), ...newSpring, statusText: "Данные проверяются" });
+    localStorage.setItem('kz_springs_db', JSON.stringify(localDB));
+
+    try {
+        const { error } = await supabase.from('springs').insert([newSpring]);
+        if (error) throw error;
+        alert("Успешно! Источник отправлен в базу данных PostgreSQL на модерацию.");
+    } catch (err) {
+        console.error("Сбой записи в БД:", err.message);
+        alert("Точка добавлена локально. Нет связи с облаком.");
+    }
     
-    // Сброс фильтров
     document.querySelectorAll('.filter-btn:not(#addSpringBtn)').forEach(b => b.classList.remove('active'));
     document.querySelector('[data-filter="all"]').classList.add('active');
     currentFilter = 'all';
     searchQuery = '';
     document.getElementById('search').value = '';
     
-    renderMapAndList();
+    await loadSpringsFromDatabase();
     map.setView([lat, lng], 10);
     
     addForm.reset();
     addModal.style.display = 'none';
 });
 
-// --- АВТОРИЗАЦИЯ SUPABASE ---
+// Настройка авторизации
 const authModal = document.getElementById('authModal');
 const headerAuthBtn = document.getElementById('headerAuthBtn');
 const authForm = document.getElementById('reactAuthForm');
 const emailSubmitBtn = document.getElementById('emailSubmitBtn');
-
-// Инициализация Supabase
-// Инициализация Supabase
-const supabaseUrl = 'https://ruufnctrimvyiakmohdb.supabase.co'; // Ваш новый сервер
-const supabaseKey = 'sb_publishable_OKaW99uT-sCy51HvDymzzw_agJ02m_7'; // Ваш новый ключ
-const supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
 
 const updateHeaderState = (user) => {
     if (user) {
@@ -550,10 +594,7 @@ const updateHeaderState = (user) => {
     }
 };
 
-// Слушатель состояния (срабатывает при логине/выходе)
 supabase.auth.onAuthStateChange((event, session) => updateHeaderState(session?.user));
-
-// Первичная проверка при загрузке
 supabase.auth.getSession().then(({ data }) => updateHeaderState(data.session?.user));
 
 headerAuthBtn.addEventListener('click', async () => {
@@ -567,7 +608,6 @@ headerAuthBtn.addEventListener('click', async () => {
 
 document.getElementById('closeAuthModalBtn').addEventListener('click', () => authModal.style.display = 'none');
 
-// ОПТИМИЗАЦИЯ 5: Try/Catch для работы с сетью
 authForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     emailSubmitBtn.disabled = true;
@@ -577,11 +617,9 @@ authForm.addEventListener('submit', async (e) => {
     
     try {
         const { error } = await supabase.auth.signInWithOtp({ 
-            email, options: { emailRedirectTo: window.location.origin }
+            email, options: { emailRedirectTo: window.location.origin + window.location.pathname }
         });
-        
         if (error) throw error;
-        
         alert(`Успешно! Проверьте вашу почту (${email}) для входа в систему.`);
         authForm.reset();
         authModal.style.display = 'none';
@@ -595,15 +633,18 @@ authForm.addEventListener('submit', async (e) => {
 
 document.getElementById('googleAuthBtn').addEventListener('click', async () => {
     try {
-        const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } });
+        const { error } = await supabase.auth.signInWithOAuth({ 
+            provider: 'google', 
+            options: { redirectTo: window.location.origin + window.location.pathname } 
+        });
         if (error) throw error;
     } catch (err) {
         alert('Ошибка входа через Google: ' + err.message);
     }
 });
 
-// Первичный рендер
-renderMapAndList();
+// Запуск первичного сбора данных
+loadSpringsFromDatabase();
 </script>
 </body>
 </html>
